@@ -5,7 +5,7 @@
 
 # ── Stage 1: Builder ─────────────────────────────────────────────────────────
 # Install dependencies into a virtual environment to keep the final image clean.
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 WORKDIR /build
 
@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 # Use a fresh slim image for the final runtime stage.
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 WORKDIR /app
 
