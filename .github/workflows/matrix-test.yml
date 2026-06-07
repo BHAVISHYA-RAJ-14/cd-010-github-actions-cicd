@@ -107,7 +107,7 @@ jobs:
 
       # ── Upload per-leg results ────────────────────────────────────────────
       - name: Upload test results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: test-${{ matrix.os }}-py${{ matrix.python-version }}-pg${{ matrix.postgres-version }}
