@@ -1,0 +1,11 @@
+# .gitignore
+.coverage
+coverage.xml
+htmlcov/
+*.pyc
+__pycache__/
+.pytest_cache/
+*.egg-info/
+dist/
+.env
+*.env
