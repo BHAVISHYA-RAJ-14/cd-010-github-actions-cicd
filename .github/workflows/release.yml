@@ -159,7 +159,7 @@ jobs:
           OUTPUT: CHANGELOG.md
 
       - name: Upload changelog artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: changelog-${{ needs.validate.outputs.version }}
           path: |
@@ -202,7 +202,7 @@ jobs:
           skip-existing:  true
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-wheel-${{ needs.validate.outputs.version }}
           path: dist/
@@ -258,7 +258,7 @@ jobs:
           echo "✅ Helm chart pushed to ECR OCI"
 
       - name: Upload Helm chart artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: helm-chart-${{ needs.validate.outputs.version }}
           path: ./helm-charts/
