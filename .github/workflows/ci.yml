@@ -1,0 +1,163 @@
+# .github/workflows/ci.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# CI Workflow — Pull Request & Push to Main
+# Triggers: PR to main, push to main
+# Jobs: lint → unit-test → security-scan → docker-build (dry-run)
+#
+# Step 3 implementation: pip + Docker layer caching
+# All jobs run in parallel where possible; lint gates tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: CI — Lint, Test & Scan
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+# Cancel in-progress runs on same PR (saves minutes)
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  IMAGE_NAME:     cd010-app
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ── JOB 1: Lint ─────────────────────────────────────────────────────────────
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest  # Fallback to GitHub-hosted for immediate availability
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python + lint
+        uses: ./.github/actions/setup-python
+        with:
+          python-version:       ${{ env.PYTHON_VERSION }}
+          requirements-file:    requirements.txt
+          dev-requirements-file: requirements-dev.txt
+          run-lint:             "true"
+
+      - name: Check formatting with black
+        run: |
+          black src/ tests/ --check --diff --line-length=120
+
+  # ── JOB 2: Unit Tests ───────────────────────────────────────────────────────
+  unit-test:
+    name: Unit Tests (Python ${{ env.PYTHON_VERSION }})
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: ./.github/actions/setup-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          run-lint:       "false"
+
+      - name: Run unit tests with coverage
+        run: |
+          pytest tests/unit/ \
+            -v \
+            --tb=short \
+            --cov=src \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --junitxml=test-results/unit-results.xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: coverage.xml
+          flags: unit
+          fail_ci_if_error: false
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-results
+          path: test-results/
+
+  # ── JOB 3: Security Scan ────────────────────────────────────────────────────
+  security-scan:
+    name: Security Scan (Trivy + pip-audit)
+    runs-on: ubuntu-latest
+    needs: lint
+
+    permissions:
+      security-events: write
+      contents:        read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: ./.github/actions/setup-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          run-lint:       "false"
+
+      - name: Audit Python dependencies
+        run: |
+          pip-audit -r requirements.txt --output=pip-audit.json --format=json || true
+          pip-audit -r requirements.txt
+
+      - name: Scan repo with Trivy (secrets + misconfigs)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type:  fs
+          scan-ref:   .
+          severity:   HIGH,CRITICAL
+          exit-code:  0
+          format:     sarif
+          output:     trivy-fs.sarif
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+
+  # ── JOB 4: Docker Build (dry-run, no push) ─────────────────────────────────
+  docker-build:
+    name: Docker Build (dry-run)
+    runs-on: ubuntu-latest
+    needs: [unit-test, security-scan]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image (no push on PR)
+        uses: ./.github/actions/docker-build
+        with:
+          image-name:   ${{ env.IMAGE_NAME }}
+          tag:          pr-${{ github.event.pull_request.number || github.run_number }}
+          ecr-registry: local
+          push:         "false"
+
+  # ── JOB 5: Notify on failure ────────────────────────────────────────────────
+  notify-failure:
+    name: Notify on CI Failure
+    needs: [lint, unit-test, security-scan, docker-build]
+    if: failure()
+    uses: ./.github/workflows/reusable-notify.yml
+    with:
+      status:  failure
+      title:   "CI Failed"
+      message: "CI pipeline failed on `${{ github.ref_name }}` — check the run for details."
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

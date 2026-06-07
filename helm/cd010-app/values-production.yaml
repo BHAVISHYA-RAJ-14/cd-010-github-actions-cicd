@@ -1,0 +1,24 @@
+# helm/cd010-app/values-production.yaml
+# Overrides base values.yaml for production environment
+
+replicaCount: 3
+environment:  production
+
+resources:
+  requests:
+    cpu:    250m
+    memory: 256Mi
+  limits:
+    cpu:    1000m
+    memory: 512Mi
+
+autoscaling:
+  enabled:     true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+ingress:
+  enabled: true
+  className: nginx
+  host: cd010-app.example.com

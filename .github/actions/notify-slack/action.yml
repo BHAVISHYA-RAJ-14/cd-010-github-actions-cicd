@@ -1,0 +1,143 @@
+# .github/actions/notify-slack/action.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Composite Action: Slack Notification
+# Formats a rich Slack message with job status, commit info, and run link.
+# Used in CI, deploy, and release workflows.
+#
+# Usage:
+#   - uses: ./.github/actions/notify-slack
+#     with:
+#       status: success
+#       channel: "#cd010-deployments"
+#       slack-webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Notify Slack
+description: >
+  Composite action — formats a rich Slack block-kit message with
+  workflow status, commit SHA, author, branch, and run link.
+  Supports success / failure / warning states with colour coding.
+
+# ── Inputs ────────────────────────────────────────────────────────────────────
+inputs:
+  status:
+    description: Workflow status ("success", "failure", "warning", "cancelled")
+    required: true
+
+  title:
+    description: Notification title (e.g. "Deploy to Production")
+    required: false
+    default: "GitHub Actions"
+
+  message:
+    description: Optional custom message body
+    required: false
+    default: ""
+
+  channel:
+    description: Slack channel name (e.g. "#deployments")
+    required: false
+    default: "#cd010-cicd"
+
+  slack-webhook:
+    description: Slack Incoming Webhook URL
+    required: true
+
+# ── Outputs ───────────────────────────────────────────────────────────────────
+outputs:
+  notification-sent:
+    description: Whether notification was sent ("true"/"false")
+    value: ${{ steps.send.outputs.sent }}
+
+# ── Steps ─────────────────────────────────────────────────────────────────────
+runs:
+  using: composite
+
+  steps:
+    # Step 1 — Build Slack payload with block-kit formatting
+    - name: Build Slack payload
+      id: payload
+      shell: bash
+      run: |
+        # Map status to emoji and colour
+        case "${{ inputs.status }}" in
+          success)   EMOJI="✅"; COLOR="#36a64f" ;;
+          failure)   EMOJI="❌"; COLOR="#ff0000" ;;
+          warning)   EMOJI="⚠️";  COLOR="#ff9800" ;;
+          cancelled) EMOJI="⏹️";  COLOR="#808080" ;;
+          *)         EMOJI="ℹ️";  COLOR="#2196F3" ;;
+        esac
+
+        SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+        RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        COMMIT_URL="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+
+        # Build Slack Block Kit JSON payload
+        PAYLOAD=$(cat <<EOF
+        {
+          "channel": "${{ inputs.channel }}",
+          "attachments": [{
+            "color": "${COLOR}",
+            "blocks": [
+              {
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": "${EMOJI} ${{ inputs.title }} — ${{ inputs.status }}"
+                }
+              },
+              {
+                "type": "section",
+                "fields": [
+                  {"type": "mrkdwn", "text": "*Repo:*\n${{ github.repository }}"},
+                  {"type": "mrkdwn", "text": "*Branch:*\n\`${{ github.ref_name }}\`"},
+                  {"type": "mrkdwn", "text": "*Commit:*\n<${COMMIT_URL}|\`${SHORT_SHA}\`>"},
+                  {"type": "mrkdwn", "text": "*Actor:*\n${{ github.actor }}"},
+                  {"type": "mrkdwn", "text": "*Workflow:*\n${{ github.workflow }}"},
+                  {"type": "mrkdwn", "text": "*Run:*\n<${RUN_URL}|#${{ github.run_number }}>"}
+                ]
+              }
+        EOF
+        )
+
+        # Add optional custom message block
+        if [ -n "${{ inputs.message }}" ]; then
+          PAYLOAD="${PAYLOAD},
+              {
+                \"type\": \"section\",
+                \"text\": {
+                  \"type\": \"mrkdwn\",
+                  \"text\": \"${{ inputs.message }}\"
+                }
+              }"
+        fi
+
+        PAYLOAD="${PAYLOAD}
+            ]
+          }]
+        }"
+
+        # Save to file (avoids shell escaping issues)
+        echo "$PAYLOAD" > /tmp/slack-payload.json
+        echo "✅ Slack payload built"
+
+    # Step 2 — Send to Slack via Incoming Webhook
+    - name: Send Slack notification
+      id: send
+      shell: bash
+      run: |
+        HTTP_CODE=$(curl -s -o /tmp/slack-response.txt -w "%{http_code}" \
+          -X POST \
+          -H "Content-type: application/json" \
+          --data @/tmp/slack-payload.json \
+          "${{ inputs.slack-webhook }}")
+
+        if [ "$HTTP_CODE" = "200" ]; then
+          echo "sent=true" >> $GITHUB_OUTPUT
+          echo "✅ Slack notification sent (HTTP $HTTP_CODE)"
+        else
+          echo "sent=false" >> $GITHUB_OUTPUT
+          echo "⚠️ Slack notification failed (HTTP $HTTP_CODE)"
+          cat /tmp/slack-response.txt
+          # Non-fatal — don't fail the workflow if Slack is down
+        fi

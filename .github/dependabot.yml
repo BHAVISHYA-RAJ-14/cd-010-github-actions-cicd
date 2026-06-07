@@ -1,0 +1,60 @@
+# .github/dependabot.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Dependabot configuration — automatic dependency updates
+# Covers: GitHub Actions versions, Python packages, Docker base images
+# Part of Step 1: Reusable Workflows & Composite Actions
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: 2
+
+updates:
+  # ── GitHub Actions ──────────────────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Kolkata
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "chore(deps)"
+    reviewers:
+      - BHAVISHYA-RAJ-14
+    # Pin actions to SHA for security, but allow Dependabot to update the SHA
+    groups:
+      aws-actions:
+        patterns:
+          - "aws-actions/*"
+      docker-actions:
+        patterns:
+          - "docker/*"
+
+  # ── Python packages ─────────────────────────────────────────────────────────
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Kolkata
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: "chore(deps)"
+    open-pull-requests-limit: 5
+
+  # ── Docker base image ────────────────────────────────────────────────────────
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: "chore(deps)"

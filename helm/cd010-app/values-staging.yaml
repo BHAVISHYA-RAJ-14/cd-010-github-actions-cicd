@@ -1,0 +1,18 @@
+# helm/cd010-app/values-staging.yaml
+# Overrides base values.yaml for staging environment
+
+replicaCount: 1
+environment:  staging
+
+resources:
+  requests:
+    cpu:    50m
+    memory: 64Mi
+  limits:
+    cpu:    250m
+    memory: 128Mi
+
+autoscaling:
+  enabled:     false
+  minReplicas: 1
+  maxReplicas: 3

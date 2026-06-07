@@ -1,0 +1,154 @@
+# .github/workflows/matrix-test.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Matrix Test Workflow — Step 3: Matrix Builds & Test Optimisation
+#
+# Strategy: [ubuntu-22.04, ubuntu-24.04] × [python-3.11, 3.12] × [postgres-15, 16]
+# = 8 combinations, minus 1 exclusion = 7 parallel jobs
+# fail-fast: false — complete ALL legs even if one fails
+# Target: < 5 min total CI time via pip + Docker layer caching
+#
+# Triggers: push to main, PR to main, manual dispatch
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Matrix — Tests (3D, 8 jobs)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      python-versions:
+        description: Python versions to test (comma-separated)
+        required: false
+        default: "3.11,3.12"
+
+concurrency:
+  group: matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ── 3D Matrix: OS × Python × Postgres ────────────────────────────────────
+  test-matrix:
+    name: Test / ${{ matrix.os }} / py${{ matrix.python-version }} / pg${{ matrix.postgres-version }}
+    runs-on: ${{ matrix.os }}
+
+    # ── fail-fast: false → all 8 legs run even if one fails ─────────────────
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-22.04
+          - ubuntu-24.04
+        python-version:
+          - "3.11"
+          - "3.12"
+        postgres-version:
+          - "15"
+          - "16"
+
+        # ── Exclusions: skip incompatible combos ─────────────────────────────
+        # ubuntu-24.04 dropped official pg-15 packages in main repos
+        exclude:
+          - os: ubuntu-24.04
+            postgres-version: "15"
+
+    # ── Services: Postgres sidecar ───────────────────────────────────────────
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres-version }}-alpine
+        env:
+          POSTGRES_USER:     testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB:       testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U testuser"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL:    postgresql://testuser:testpass@localhost:5432/testdb
+      ENVIRONMENT:     test
+      PYTHONPATH:      src
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Setup Python with composite action (includes pip cache) ──────────
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: ./.github/actions/setup-python
+        with:
+          python-version: ${{ matrix.python-version }}
+          run-lint:       "false"
+
+      # ── Run tests ────────────────────────────────────────────────────────
+      - name: Run unit tests
+        run: |
+          pytest tests/unit/ \
+            -v \
+            --tb=short \
+            --junitxml=test-results/unit-${{ matrix.os }}-py${{ matrix.python-version }}-pg${{ matrix.postgres-version }}.xml
+
+      # ── Run integration tests (with Postgres) ────────────────────────────
+      - name: Run integration tests (with Postgres)
+        run: |
+          pytest tests/integration/ \
+            -v \
+            --tb=short \
+            -m "integration" \
+            --junitxml=test-results/integration-${{ matrix.os }}-py${{ matrix.python-version }}-pg${{ matrix.postgres-version }}.xml
+
+      # ── Upload per-leg results ────────────────────────────────────────────
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-${{ matrix.os }}-py${{ matrix.python-version }}-pg${{ matrix.postgres-version }}
+          path: test-results/
+          retention-days: 7
+
+  # ── Combine results — runs after ALL matrix legs complete ─────────────────
+  matrix-summary:
+    name: Matrix Summary
+    runs-on: ubuntu-latest
+    needs: test-matrix
+    if: always()   # Always run even if some legs fail
+
+    steps:
+      - name: Download all test results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-*
+          merge-multiple: true
+          path: all-results/
+
+      - name: Generate combined report
+        run: |
+          echo "## 🧪 Matrix Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| OS | Python | Postgres | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|---|" >> $GITHUB_STEP_SUMMARY
+
+          # Count XML result files
+          TOTAL=$(find all-results/ -name "*.xml" 2>/dev/null | wc -l)
+          echo "📊 Total result files: $TOTAL" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # List all result files
+          find all-results/ -name "*.xml" | while read f; do
+            BASENAME=$(basename "$f" .xml)
+            echo "✅ $BASENAME" >> $GITHUB_STEP_SUMMARY
+          done
+
+      - name: Fail if any matrix leg failed
+        if: needs.test-matrix.result == 'failure'
+        run: |
+          echo "❌ One or more matrix legs failed"
+          exit 1

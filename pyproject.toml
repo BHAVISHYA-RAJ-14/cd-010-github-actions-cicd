@@ -1,0 +1,44 @@
+[build-system]
+requires      = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name        = "cd010-app"
+version     = "0.1.0"
+description = "CD-010 GitHub Actions Advanced CI/CD — sample FastAPI app"
+readme      = "README.md"
+requires-python = ">=3.11"
+license     = {text = "MIT"}
+authors     = [{name = "Bhavishya Raj", email = "bhavishya@example.com"}]
+keywords    = ["cicd", "github-actions", "fastapi", "devops"]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: FastAPI",
+    "Topic :: Software Development :: Build Tools",
+]
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.6.0",
+]
+
+[project.urls]
+Homepage   = "https://github.com/BHAVISHYA-RAJ-14/cd-010-github-actions-cicd"
+Repository = "https://github.com/BHAVISHYA-RAJ-14/cd-010-github-actions-cicd"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths    = ["tests"]
+python_files = ["test_*.py"]
+markers      = ["integration: marks tests as integration (need running services)"]
+
+[tool.black]
+line-length    = 120
+target-version = ["py311", "py312"]
+
+[tool.mypy]
+python_version         = "3.12"
+ignore_missing_imports = true

@@ -1,0 +1,154 @@
+# .github/workflows/reusable-deploy-k8s.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Reusable Workflow: Deploy to Kubernetes with Helm
+# Called with: uses: ./.github/workflows/reusable-deploy-k8s.yml
+#
+# Callers: deploy.yml (staging), deploy.yml (prod)
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Reusable — Deploy to Kubernetes
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Target environment (staging / prod)
+        type: string
+        required: true
+      image-tag:
+        description: Docker image tag to deploy
+        type: string
+        required: true
+      helm-release-name:
+        description: Helm release name
+        type: string
+        required: false
+        default: cd010-app
+      namespace:
+        description: Kubernetes namespace
+        type: string
+        required: false
+        default: cd010
+      dry-run:
+        description: Run helm upgrade --dry-run only
+        type: boolean
+        required: false
+        default: false
+
+    secrets:
+      AWS_ROLE_ARN:
+        description: IAM role ARN (OIDC)
+        required: true
+      ECR_REGISTRY:
+        description: ECR registry URL
+        required: true
+      KUBECONFIG_B64:
+        description: Base64-encoded kubeconfig
+        required: true
+
+    outputs:
+      deploy-status:
+        description: Deployment result (success/failure)
+        value: ${{ jobs.deploy.outputs.status }}
+      deployed-image:
+        description: Image that was deployed
+        value: ${{ jobs.deploy.outputs.image }}
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}   # Links to GitHub Environment (approval gates)
+
+    outputs:
+      status: ${{ steps.helm-deploy.outcome }}
+      image:  ${{ secrets.ECR_REGISTRY }}/cd010-app:${{ inputs.image-tag }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── AWS OIDC Auth ─────────────────────────────────────────────────────
+      - name: Configure AWS credentials (OIDC — keyless)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume:    ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: cd010-deploy-${{ inputs.environment }}-${{ github.run_id }}
+          aws-region:        ap-south-1
+
+      # ── Setup kubectl ─────────────────────────────────────────────────────
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+          kubectl cluster-info
+
+      # ── Setup Helm ────────────────────────────────────────────────────────
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+
+      # ── Create namespace if not exists ────────────────────────────────────
+      - name: Ensure namespace exists
+        run: |
+          kubectl create namespace ${{ inputs.namespace }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      # ── Helm deploy ───────────────────────────────────────────────────────
+      - name: Helm upgrade/install
+        id: helm-deploy
+        run: |
+          DRY_RUN_FLAG=""
+          if [ "${{ inputs.dry-run }}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+            echo "🔍 Running in dry-run mode"
+          fi
+
+          helm upgrade --install ${{ inputs.helm-release-name }} ./helm/cd010-app \
+            --namespace ${{ inputs.namespace }} \
+            --values ./helm/cd010-app/values.yaml \
+            --values ./helm/cd010-app/values-${{ inputs.environment }}.yaml \
+            --set image.repository=${{ secrets.ECR_REGISTRY }}/cd010-app \
+            --set image.tag=${{ inputs.image-tag }} \
+            --set environment=${{ inputs.environment }} \
+            --atomic \
+            --timeout 5m \
+            --wait \
+            $DRY_RUN_FLAG
+
+          echo "✅ Helm deploy complete: ${{ inputs.environment }}"
+
+      # ── Verify deployment ─────────────────────────────────────────────────
+      - name: Verify rollout
+        if: inputs.dry-run == false
+        run: |
+          kubectl rollout status deployment/${{ inputs.helm-release-name }} \
+            -n ${{ inputs.namespace }} \
+            --timeout=3m
+          kubectl get pods -n ${{ inputs.namespace }} -l app=${{ inputs.helm-release-name }}
+
+      # ── Write deployment summary ──────────────────────────────────────────
+      - name: Write deployment summary
+        if: always()
+        run: |
+          echo "## 🚀 Deployment Summary — ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | \`${{ inputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image Tag | \`${{ inputs.image-tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Namespace | \`${{ inputs.namespace }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Release | \`${{ inputs.helm-release-name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Actor | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| SHA | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY

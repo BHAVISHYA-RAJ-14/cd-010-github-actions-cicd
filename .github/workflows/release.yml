@@ -1,0 +1,312 @@
+# .github/workflows/release.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Release Automation Pipeline — Step 5
+#
+# Trigger: push tag v*.*.* (e.g. v1.2.3)
+# Flow:
+#   tag pushed
+#   → validate semver
+#   → run full test suite
+#   → build multi-arch Docker (amd64 + arm64) → push ECR with semver tags
+#   → build Python wheel → publish to TestPyPI
+#   → generate CHANGELOG with git-cliff (conventional commits)
+#   → package Helm chart → push to OCI registry (ECR)
+#   → create GitHub Release with changelog + artifacts
+#   → notify Slack with release summary
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Release Pipeline
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'      # matches v1.2.3
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'    # matches v1.2.3-rc.1
+
+env:
+  IMAGE_NAME: cd010-app
+  AWS_REGION: ap-south-1
+  PYTHON_VERSION: "3.12"
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ── JOB 1: Validate tag is semver ──────────────────────────────────────────
+  validate:
+    name: Validate Release Tag
+    runs-on: ubuntu-latest
+
+    outputs:
+      version:       ${{ steps.parse.outputs.version }}
+      is-prerelease: ${{ steps.parse.outputs.is-prerelease }}
+
+    steps:
+      - name: Parse semver tag
+        id: parse
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "📌 Tag: ${TAG}"
+
+          # Validate semver format
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "❌ Invalid semver: ${TAG}"
+            exit 1
+          fi
+
+          VERSION="${TAG#v}"          # Strip leading 'v'
+          IS_PRE=$([[ "${TAG}" == *-* ]] && echo "true" || echo "false")
+
+          echo "version=${VERSION}"       >> $GITHUB_OUTPUT
+          echo "is-prerelease=${IS_PRE}"  >> $GITHUB_OUTPUT
+          echo "✅ Valid semver: ${VERSION} (prerelease: ${IS_PRE})"
+
+  # ── JOB 2: Full Test Suite ─────────────────────────────────────────────────
+  test:
+    name: Full Test Suite
+    runs-on: ubuntu-latest
+    needs: validate
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # Full history for git-cliff changelog
+
+      # Composite action handles setup + cache
+      - name: Setup Python
+        uses: ./.github/actions/setup-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          run-lint:       "true"
+
+      - name: Run full test suite
+        run: |
+          pytest tests/ \
+            -v \
+            --tb=short \
+            --cov=src \
+            --cov-report=xml \
+            --junitxml=test-results.xml
+
+  # ── JOB 3: Build & Push Docker (multi-arch) ─────────────────────────────
+  docker:
+    name: Build & Push Docker (amd64 + arm64)
+    runs-on: ubuntu-latest
+    needs: [validate, test]
+
+    outputs:
+      image-digest: ${{ steps.build.outputs.image-digest }}
+
+    permissions:
+      id-token:        write
+      contents:        read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume:    ${{ secrets.AWS_ROLE_ARN_PROD }}
+          role-session-name: cd010-release-${{ needs.validate.outputs.version }}
+          aws-region:        ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & push multi-arch release image
+        id: build
+        uses: ./.github/actions/docker-build
+        with:
+          image-name:   ${{ env.IMAGE_NAME }}
+          tag:          v${{ needs.validate.outputs.version }}
+          ecr-registry: ${{ steps.ecr-login.outputs.registry }}
+          push:         "true"
+
+  # ── JOB 4: Generate CHANGELOG with git-cliff ─────────────────────────────
+  changelog:
+    name: Generate CHANGELOG
+    runs-on: ubuntu-latest
+    needs: validate
+
+    outputs:
+      changelog: ${{ steps.cliff.outputs.changelog }}
+
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate CHANGELOG for this release
+        id: cliff
+        uses: orhun/git-cliff-action@v3
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: CHANGELOG-release.md
+
+      - name: Update root CHANGELOG.md
+        uses: orhun/git-cliff-action@v3
+        with:
+          config: cliff.toml
+          args: --tag ${{ github.ref_name }}
+        env:
+          OUTPUT: CHANGELOG.md
+
+      - name: Upload changelog artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: changelog-${{ needs.validate.outputs.version }}
+          path: |
+            CHANGELOG.md
+            CHANGELOG-release.md
+
+  # ── JOB 5: Build Python Wheel ────────────────────────────────────────────
+  python-wheel:
+    name: Build Python Wheel
+    runs-on: ubuntu-latest
+    needs: [validate, test]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: ./.github/actions/setup-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          run-lint:       "false"
+
+      - name: Update version in pyproject.toml
+        run: |
+          sed -i "s/^version = .*/version = \"${{ needs.validate.outputs.version }}\"/" pyproject.toml
+          cat pyproject.toml | grep version
+
+      - name: Build wheel and sdist
+        run: |
+          pip install build
+          python -m build
+          ls -la dist/
+
+      - name: Publish to TestPyPI (for demo/portfolio)
+        if: needs.validate.outputs.is-prerelease == 'false'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          password:       ${{ secrets.TEST_PYPI_TOKEN }}
+          skip-existing:  true
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-wheel-${{ needs.validate.outputs.version }}
+          path: dist/
+
+  # ── JOB 6: Package & Push Helm Chart ─────────────────────────────────────
+  helm-chart:
+    name: Package Helm Chart
+    runs-on: ubuntu-latest
+    needs: [validate, docker]
+
+    permissions:
+      id-token: write
+      contents:  read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Update Helm chart appVersion
+        run: |
+          sed -i "s/^appVersion:.*/appVersion: \"v${{ needs.validate.outputs.version }}\"/" \
+            helm/cd010-app/Chart.yaml
+          sed -i "s/^version:.*/version: ${{ needs.validate.outputs.version }}/" \
+            helm/cd010-app/Chart.yaml
+          cat helm/cd010-app/Chart.yaml
+
+      - name: Package Helm chart
+        run: |
+          helm package helm/cd010-app/ --destination ./helm-charts/
+          ls -la ./helm-charts/
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume:    ${{ secrets.AWS_ROLE_ARN_PROD }}
+          role-session-name: cd010-helm-release
+          aws-region:        ${{ env.AWS_REGION }}
+
+      - name: Push Helm chart to ECR OCI registry
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} \
+            | helm registry login \
+              --username AWS \
+              --password-stdin \
+              ${{ secrets.ECR_REGISTRY }}
+
+          helm push ./helm-charts/cd010-app-${{ needs.validate.outputs.version }}.tgz \
+            oci://${{ secrets.ECR_REGISTRY }}/helm/
+
+          echo "✅ Helm chart pushed to ECR OCI"
+
+      - name: Upload Helm chart artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: helm-chart-${{ needs.validate.outputs.version }}
+          path: ./helm-charts/
+
+  # ── JOB 7: Create GitHub Release ────────────────────────────────────────
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [validate, docker, changelog, python-wheel, helm-chart]
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name:   ${{ github.ref_name }}
+          name:       Release ${{ github.ref_name }}
+          body:       ${{ needs.changelog.outputs.changelog }}
+          draft:      false
+          prerelease: ${{ needs.validate.outputs.is-prerelease == 'true' }}
+          files: |
+            release-artifacts/python-wheel-*/*.whl
+            release-artifacts/python-wheel-*/*.tar.gz
+            release-artifacts/helm-chart-*/*.tgz
+            release-artifacts/changelog-*/CHANGELOG.md
+
+  # ── JOB 8: Notify Slack release ──────────────────────────────────────────
+  notify-release:
+    name: Notify Release
+    needs: [validate, github-release]
+    if: always()
+    uses: ./.github/workflows/reusable-notify.yml
+    with:
+      status:  ${{ needs.github-release.result }}
+      title:   "Release ${{ needs.validate.outputs.version }}"
+      message: >
+        🎉 Released v${{ needs.validate.outputs.version }} to production.
+        Docker: multi-arch amd64+arm64 pushed to ECR.
+        Helm chart pushed to ECR OCI registry.
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

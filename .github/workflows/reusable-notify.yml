@@ -1,0 +1,55 @@
+# .github/workflows/reusable-notify.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Reusable Workflow: Slack Notification
+# Called from any workflow at end of job to report status.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Reusable — Slack Notify
+
+on:
+  workflow_call:
+    inputs:
+      status:
+        description: Workflow status (success/failure/warning/cancelled)
+        type: string
+        required: true
+      title:
+        description: Notification title
+        type: string
+        required: false
+        default: GitHub Actions
+      message:
+        description: Custom message body
+        type: string
+        required: false
+        default: ""
+      channel:
+        description: Slack channel
+        type: string
+        required: false
+        default: "#cd010-cicd"
+
+    secrets:
+      SLACK_WEBHOOK_URL:
+        description: Slack Incoming Webhook URL
+        required: false
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  notify:
+    name: Notify Slack
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Checkout (for composite action access)
+        uses: actions/checkout@v4
+
+      - name: Send Slack notification
+        uses: ./.github/actions/notify-slack
+        with:
+          status:        ${{ inputs.status }}
+          title:         ${{ inputs.title }}
+          message:       ${{ inputs.message }}
+          channel:       ${{ inputs.channel }}
+          slack-webhook: ${{ secrets.SLACK_WEBHOOK_URL }}

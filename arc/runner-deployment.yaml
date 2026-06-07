@@ -1,0 +1,199 @@
+# arc/runner-deployment.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 6: Self-Hosted Runners on Kubernetes (ARC)
+# actions-runner-controller (ARC) — ephemeral runners that autoscale
+#
+# Setup steps (run these BEFORE applying this file):
+#   1. helm repo add actions-runner-controller \
+#        https://actions-runner-controller.github.io/actions-runner-controller
+#   2. helm install arc actions-runner-controller/actions-runner-controller \
+#        --namespace arc-system --create-namespace \
+#        --set authSecret.create=true \
+#        --set authSecret.github_token=<YOUR_PAT>
+#   3. kubectl apply -f arc/runner-deployment.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Namespace: isolate runners ───────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: arc-runners
+  labels:
+    app.kubernetes.io/managed-by: arc
+    project: cd-010-github-actions-cicd
+
+---
+# ── RunnerDeployment: public-facing runners (restricted permissions) ─────────
+# Each job gets a FRESH ephemeral container — destroyed after job completes.
+# No cross-job contamination, no state leakage.
+apiVersion: actions.summerwind.dev/v1alpha1
+kind: RunnerDeployment
+metadata:
+  name: cd010-public-runners
+  namespace: arc-runners
+  labels:
+    runner-group: public
+    project: cd-010-github-actions-cicd
+spec:
+  # Static replica count — use HorizontalRunnerAutoscaler below for autoscaling
+  replicas: 1
+
+  template:
+    spec:
+      # Repo-level runners (scoped to this project only)
+      repository: BHAVISHYA-RAJ-14/cd-010-github-actions-cicd
+
+      # Runner group label — workflows use: runs-on: [self-hosted, cd010-public]
+      labels:
+        - self-hosted
+        - linux
+        - cd010-public
+
+      # Ephemeral: runner is destroyed after each job (security best practice)
+      ephemeral: true
+
+      # Runner image — use official ARC runner image
+      image: summerwind/actions-runner:latest
+
+      # Resource limits (restricted for public runners)
+      resources:
+        requests:
+          cpu:    "250m"
+          memory: "512Mi"
+        limits:
+          cpu:    "1000m"
+          memory: "1Gi"
+
+      # Security context — non-root runner
+      securityContext:
+        runAsUser:    1000
+        runAsGroup:   1000
+        runAsNonRoot: true
+        fsGroup:      1000
+
+      # Mount Docker socket for Docker-in-Docker builds
+      dockerdWithinRunnerContainer: true
+
+      # Environment variables available to all jobs on this runner
+      env:
+        - name:  RUNNER_FEATURE_FLAG_EPHEMERAL
+          value: "true"
+        - name:  ENVIRONMENT
+          value: "self-hosted-dev"
+
+---
+# ── HorizontalRunnerAutoscaler: scale based on job queue ────────────────────
+# Scales up when jobs are waiting, scales to 0 when queue is empty.
+apiVersion: actions.summerwind.dev/v1alpha1
+kind: HorizontalRunnerAutoscaler
+metadata:
+  name: cd010-public-runners-autoscaler
+  namespace: arc-runners
+spec:
+  scaleTargetRef:
+    name: cd010-public-runners
+
+  # Scale between 0 and 5 runners
+  minReplicas: 0
+  maxReplicas: 5
+
+  # Scale up when there are pending jobs
+  metrics:
+    - type: TotalNumberOfQueuedAndInProgressWorkflowRuns
+      repositoryNames:
+        - BHAVISHYA-RAJ-14/cd-010-github-actions-cicd
+
+  # Scale-down: wait 5 min after last job before terminating runner
+  scaleDownDelaySecondsAfterScaleOut: 300
+
+---
+# ── RunnerDeployment: internal runners (full access, larger resources) ───────
+apiVersion: actions.summerwind.dev/v1alpha1
+kind: RunnerDeployment
+metadata:
+  name: cd010-internal-runners
+  namespace: arc-runners
+  labels:
+    runner-group: internal
+    project: cd-010-github-actions-cicd
+spec:
+  replicas: 1
+
+  template:
+    spec:
+      repository: BHAVISHYA-RAJ-14/cd-010-github-actions-cicd
+
+      labels:
+        - self-hosted
+        - linux
+        - cd010-internal    # Use for release.yml, deploy.yml (privileged ops)
+
+      ephemeral: true
+      image: summerwind/actions-runner:latest
+
+      # Larger resources for GPU/memory-intensive jobs
+      resources:
+        requests:
+          cpu:    "500m"
+          memory: "1Gi"
+        limits:
+          cpu:    "2000m"
+          memory: "4Gi"
+
+      securityContext:
+        runAsUser:    1000
+        runAsGroup:   1000
+        runAsNonRoot: true
+
+      dockerdWithinRunnerContainer: true
+
+      # Internal runners get access to internal secrets via env
+      env:
+        - name:  RUNNER_FEATURE_FLAG_EPHEMERAL
+          value: "true"
+        - name:  ENVIRONMENT
+          value: "self-hosted-internal"
+
+---
+# ── NetworkPolicy: restrict egress from runner pods ─────────────────────────
+# Runners can only reach: GitHub, AWS, Docker Hub, PyPI
+# All other egress is blocked (security best practice)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cd010-runner-network-policy
+  namespace: arc-runners
+spec:
+  podSelector:
+    matchLabels:
+      app: runner   # Selects all ARC runner pods
+
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # No ingress needed — runners only make outbound connections
+  ingress: []
+
+  egress:
+    # Allow DNS resolution
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+    # Allow HTTPS (443) — GitHub API, AWS, Docker, PyPI
+    - ports:
+        - port: 443
+          protocol: TCP
+
+    # Allow HTTP (80) — package managers
+    - ports:
+        - port: 80
+          protocol: TCP
+
+    # Allow Kubernetes API server
+    - ports:
+        - port: 6443
+          protocol: TCP

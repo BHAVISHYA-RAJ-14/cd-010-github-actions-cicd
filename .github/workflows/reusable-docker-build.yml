@@ -1,0 +1,124 @@
+# .github/workflows/reusable-docker-build.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Reusable Workflow: Multi-Arch Docker Build
+# Called with: uses: ./.github/workflows/reusable-docker-build.yml
+#
+# Callers: ci.yml (build only), release.yml (build + push ECR)
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Reusable — Docker Build
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: Docker image name
+        type: string
+        required: true
+      tag:
+        description: Image tag (SHA or semver)
+        type: string
+        required: true
+      push:
+        description: Push to ECR after build
+        type: boolean
+        required: false
+        default: false
+      environment:
+        description: Target environment (dev/staging/prod)
+        type: string
+        required: false
+        default: dev
+
+    secrets:
+      AWS_ROLE_ARN:
+        description: IAM role ARN for OIDC auth (required when push=true)
+        required: false
+      ECR_REGISTRY:
+        description: ECR registry URL
+        required: false
+
+    outputs:
+      image-uri:
+        description: Full image URI that was built/pushed
+        value: ${{ jobs.docker-build.outputs.image-uri }}
+      image-digest:
+        description: Image content digest
+        value: ${{ jobs.docker-build.outputs.image-digest }}
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  docker-build:
+    name: Build ${{ inputs.image-name }}:${{ inputs.tag }}
+    runs-on: ubuntu-latest  # Use GitHub-hosted for multi-arch compatibility
+
+    outputs:
+      image-uri:    ${{ steps.build.outputs.image-uri }}
+      image-digest: ${{ steps.build.outputs.image-digest }}
+
+    permissions:
+      id-token:      write   # OIDC token for AWS auth
+      contents:      read
+      security-events: write  # Upload Trivy SARIF
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── OIDC AWS Auth (only when pushing) ─────────────────────────────────
+      - name: Configure AWS credentials (OIDC)
+        if: inputs.push == true
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume:    ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: cd010-docker-build-${{ inputs.environment }}
+          aws-region:        ap-south-1
+
+      - name: Login to Amazon ECR
+        if: inputs.push == true
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── Security scan BEFORE build ────────────────────────────────────────
+      - name: Scan Dockerfile with Trivy (misconfig)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type:   config
+          scan-ref:    .
+          severity:    HIGH,CRITICAL
+          exit-code:   0       # Non-blocking — report only
+          format:      sarif
+          output:      trivy-dockerfile.sarif
+
+      # ── Build multi-arch image ────────────────────────────────────────────
+      - name: Build Docker image
+        id: build
+        uses: ./.github/actions/docker-build
+        with:
+          image-name:   ${{ inputs.image-name }}
+          tag:          ${{ inputs.tag }}
+          ecr-registry: ${{ secrets.ECR_REGISTRY || 'local' }}
+          push:         ${{ inputs.push }}
+
+      # ── Scan built image for vulnerabilities ──────────────────────────────
+      - name: Scan image with Trivy (vulnerabilities)
+        if: inputs.push == true
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref:  ${{ secrets.ECR_REGISTRY }}/${{ inputs.image-name }}:${{ inputs.tag }}
+          severity:   HIGH,CRITICAL
+          exit-code:  1        # Fail on critical vulns in pushed images
+          format:     sarif
+          output:     trivy-image.sarif
+
+      - name: Upload Trivy Dockerfile SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-dockerfile.sarif
+
+      - name: Upload Trivy Image SARIF
+        if: inputs.push == true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif

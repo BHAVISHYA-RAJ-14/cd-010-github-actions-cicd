@@ -1,0 +1,148 @@
+# .github/workflows/deploy.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Deploy Workflow — Step 4: Deployment Environments
+#
+# Flow:
+#   push to main
+#     → build image + push ECR
+#     → deploy to staging (auto, no approval)
+#     → wait 15 minutes (soak timer)
+#     → deploy to production (requires 2 SRE approvals in GitHub Environments)
+#
+# GitHub Environments config (set in repo settings):
+#   staging:    auto-deploy, no reviewers, 0 wait
+#   production: required reviewers: 2, wait timer: 15min
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Deploy — Staging → Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image-tag:
+        description: Image tag to deploy (defaults to commit SHA)
+        required: false
+      skip-staging:
+        description: Skip staging and deploy direct to prod (emergency)
+        type: boolean
+        default: false
+
+env:
+  IMAGE_NAME: cd010-app
+  AWS_REGION: ap-south-1
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ── JOB 1: Build & Push to ECR ─────────────────────────────────────────────
+  build:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+
+    outputs:
+      image-tag:    ${{ steps.tag.outputs.tag }}
+      image-digest: ${{ steps.docker.outputs.image-digest }}
+
+    permissions:
+      id-token:        write
+      contents:        read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Tagging ───────────────────────────────────────────────────────────
+      - name: Determine image tag
+        id: tag
+        run: |
+          TAG="${{ github.event.inputs.image-tag || github.sha }}"
+          SHORT="${TAG:0:7}"
+          echo "tag=${SHORT}" >> $GITHUB_OUTPUT
+          echo "📌 Image tag: ${SHORT}"
+
+      - name: Configure AWS credentials (OIDC — keyless)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume:    ${{ secrets.AWS_ROLE_ARN_DEV }}
+          role-session-name: cd010-build-${{ github.run_id }}
+          aws-region:        ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & push multi-arch image
+        id: docker
+        uses: ./.github/actions/docker-build
+        with:
+          image-name:   ${{ env.IMAGE_NAME }}
+          tag:          ${{ steps.tag.outputs.tag }}
+          ecr-registry: ${{ steps.ecr-login.outputs.registry }}
+          push:         "true"
+
+  # ── JOB 2: Deploy to Staging ───────────────────────────────────────────────
+  deploy-staging:
+    name: Deploy → Staging
+    needs: build
+    if: ${{ !github.event.inputs.skip-staging }}
+    uses: ./.github/workflows/reusable-deploy-k8s.yml
+    with:
+      environment:        staging
+      image-tag:          ${{ needs.build.outputs.image-tag }}
+      helm-release-name:  cd010-app
+      namespace:          cd010-staging
+    secrets:
+      AWS_ROLE_ARN:   ${{ secrets.AWS_ROLE_ARN_STAGING }}
+      ECR_REGISTRY:   ${{ secrets.ECR_REGISTRY }}
+      KUBECONFIG_B64: ${{ secrets.KUBECONFIG_STAGING_B64 }}
+
+  # ── JOB 3: Staging Soak Timer (15 min) ────────────────────────────────────
+  # GitHub Environment wait timer handles this automatically when configured.
+  staging-soak:
+    name: Staging Soak (15 min)
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    environment: staging-soak   # ← Configure this env with 15min wait timer in repo settings
+
+    steps:
+      - name: Soak timer
+        run: |
+          echo "⏱️ Staging soak period: waiting for environment stability checks..."
+          echo "📊 In production: this time is used for:"
+          echo "   - Smoke tests against staging"
+          echo "   - Error rate monitoring in CloudWatch"
+          echo "   - Alerting validation"
+          echo "✅ Soak period complete — production gate now open"
+
+  # ── JOB 4: Deploy to Production (requires 2 reviewer approvals) ────────────
+  deploy-production:
+    name: Deploy → Production
+    needs: [build, staging-soak]
+    uses: ./.github/workflows/reusable-deploy-k8s.yml
+    with:
+      environment:        production    # ← GitHub Environment: 2 required reviewers
+      image-tag:          ${{ needs.build.outputs.image-tag }}
+      helm-release-name:  cd010-app
+      namespace:          cd010-prod
+    secrets:
+      AWS_ROLE_ARN:   ${{ secrets.AWS_ROLE_ARN_PROD }}
+      ECR_REGISTRY:   ${{ secrets.ECR_REGISTRY }}
+      KUBECONFIG_B64: ${{ secrets.KUBECONFIG_PROD_B64 }}
+
+  # ── JOB 5: Notify result ───────────────────────────────────────────────────
+  notify:
+    name: Notify Deployment Result
+    needs: [build, deploy-production]
+    if: always()
+    uses: ./.github/workflows/reusable-notify.yml
+    with:
+      status:  ${{ needs.deploy-production.result }}
+      title:   "Production Deployment"
+      message: >
+        Image `${{ needs.build.outputs.image-tag }}` deployed to production.
+        Commit: `${{ github.sha }}` by @${{ github.actor }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
