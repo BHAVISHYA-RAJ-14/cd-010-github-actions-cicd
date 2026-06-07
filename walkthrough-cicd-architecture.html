@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en" style="color-scheme: dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CD-010 CI/CD Architecture Walkthrough</title>
+    <style>
+        :root {
+            --bg: #000000;
+            --text: #ffffff;
+            --accent: #a855f7;
+            --card-bg: #111111;
+            --border: #333333;
+        }
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        header {
+            padding: 1.5rem 2rem;
+            border-bottom: 1px solid var(--border);
+        }
+        h1 { margin: 0; font-size: 1.5rem; color: var(--accent); }
+        .subtitle { margin: 0.25rem 0 0; font-size: 0.9rem; color: #888; }
+        
+        main {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        #diagram-container {
+            flex: 1;
+            padding: 2rem;
+            display: flex;
+            flex-direction: column;
+            overflow: auto;
+        }
+        .tldr {
+            background: var(--card-bg);
+            border: 1px solid var(--accent);
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+            max-width: 800px;
+        }
+        .tldr h2 { margin: 0 0 0.5rem; font-size: 1rem; color: var(--accent); }
+        .tldr p { margin: 0; font-size: 0.9rem; line-height: 1.4; }
+
+        #details-panel {
+            width: 400px;
+            border-left: 1px solid var(--border);
+            padding: 2rem;
+            background: var(--card-bg);
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+            overflow-y: auto;
+        }
+        .detail-placeholder {
+            color: #555;
+            text-align: center;
+            margin-top: 4rem;
+        }
+        .node-title { font-size: 1.25rem; font-weight: bold; color: var(--accent); }
+        .node-desc { font-size: 0.95rem; line-height: 1.5; color: #ccc; }
+        .node-files { font-size: 0.8rem; color: #888; font-family: monospace; }
+        .node-code {
+            background: #000;
+            padding: 1rem;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            font-family: "Fira Code", monospace;
+            font-size: 0.85rem;
+            overflow-x: auto;
+        }
+
+        .legend {
+            margin-top: auto;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            font-size: 0.75rem;
+            color: #888;
+        }
+        .legend-item { display: flex; align-items: center; gap: 0.4rem; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; }
+
+        /* Mermaid styling */
+        .mermaid { background: transparent; cursor: crosshair; }
+        .node rect, .node circle, .node polygon, .node path { fill: #1a1a1a !important; stroke: #444 !important; stroke-width: 1.5px !important; }
+        .node .label { color: #fff !important; }
+        .edgePath .path { stroke: #666 !important; stroke-width: 1.5px !important; }
+        .edgeLabel { background: transparent !important; color: #888 !important; font-size: 0.8rem !important; }
+        .cluster rect { fill: #0a0a0a !important; stroke: #333 !important; stroke-dasharray: 5,5 !important; }
+        .cluster-label { color: #888 !important; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>CD-010 CI/CD Architecture</h1>
+        <p class="subtitle">A visual walkthrough of the advanced GitHub Actions pipelines and cloud infrastructure.</p>
+    </header>
+
+    <main>
+        <section id="diagram-container">
+            <div class="tldr">
+                <h2>TL;DR</h2>
+                <p>This project implements a modular, security-hardened CI/CD platform using GitHub Actions. It features OIDC keyless AWS authentication, multi-dimensional matrix testing, and a fully automated release pipeline targeting ECR and Kubernetes.</p>
+            </div>
+            <div class="mermaid">
+                graph TD
+                    subgraph dev_input["Development Lifecycle"]
+                        push[Developer Push]
+                        tag[Release Tag v*]
+                    end
+
+                    subgraph ci_layer["CI & Quality Gates"]
+                        ciWorkflow[CI Workflow]
+                        matrixTests[Matrix Tests]
+                    end
+
+                    subgraph release_layer["Release & Deploy"]
+                        releasePipeline[Release Pipeline]
+                        reusableDeploy[Reusable K8s Deploy]
+                    end
+
+                    subgraph infrastructure["Cloud Infrastructure"]
+                        oidcAuth[Terraform OIDC]
+                        awsECR[AWS ECR / EKS]
+                    end
+
+                    subgraph app_core["Application"]
+                        fastapiApp[FastAPI App]
+                    end
+
+                    push -->|"triggers"| ciWorkflow
+                    push -->|"triggers"| matrixTests
+                    tag -->|"triggers"| releasePipeline
+                    
+                    ciWorkflow -->|"verifies"| fastapiApp
+                    matrixTests -->|"stress tests"| fastapiApp
+                    
+                    releasePipeline -->|"uses"| oidcAuth
+                    releasePipeline -->|"calls"| reusableDeploy
+                    
+                    oidcAuth -->|"secures"| awsECR
+                    reusableDeploy -->|"deploys to"| awsECR
+                    
+                    fastapiApp -->|"runs on"| awsECR
+
+                    click ciWorkflow nodeClickHandler "View details"
+                    click matrixTests nodeClickHandler "View details"
+                    click releasePipeline nodeClickHandler "View details"
+                    click reusableDeploy nodeClickHandler "View details"
+                    click oidcAuth nodeClickHandler "View details"
+                    click fastapiApp nodeClickHandler "View details"
+            </div>
+            
+            <div class="legend">
+                <div class="legend-item"><div class="dot" style="background: #a855f7;"></div> CI/CD Pipeline</div>
+                <div class="legend-item"><div class="dot" style="background: #7c3aed;"></div> Infrastructure</div>
+                <div class="legend-item"><div class="dot" style="background: #6d28d9;"></div> Application</div>
+            </div>
+        </section>
+
+        <aside id="details-panel">
+            <div id="detail-content">
+                <div class="detail-placeholder">Click a node to view technical details</div>
+            </div>
+        </aside>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script type="module">
+        mermaid.initialize({ startOnLoad: true, theme: 'dark', securityLevel: 'loose' });
+
+        const nodeData = {
+            ciWorkflow: {
+                title: "CI Workflow",
+                description: "The primary quality gate for every Pull Request. It handles linting, unit testing, and security scanning using Trivy.",
+                files: [".github/workflows/ci.yml"],
+                code: "name: CI — Lint, Test & Scan\n\non:\n  pull_request:\n    branches: [main]\n  push:\n    branches: [main]",
+                lang: "yaml"
+            },
+            matrixTests: {
+                title: "Matrix Tests",
+                description: "Runs a 3D test matrix across multiple Operating Systems, Python versions, and Database versions to ensure maximum compatibility.",
+                files: [".github/workflows/matrix-test.yml"],
+                code: "strategy:\n  fail-fast: false\n  matrix:\n    os: [ubuntu-22.04, ubuntu-24.04]\n    python-version: [\"3.11\", \"3.12\"]\n    postgres-version: [\"15\", \"16\"]",
+                lang: "yaml"
+            },
+            releasePipeline: {
+                title: "Release Pipeline",
+                description: "Automates the entire release process when a semver tag (v1.0.0) is pushed. It builds multi-arch Docker images and generates changelogs.",
+                files: [".github/workflows/release.yml"],
+                code: "on:\n  push:\n    tags:\n      - 'v[0-9]+.[0-9]+.[0-9]+'\n\njobs:\n  release:\n    uses: ./.github/workflows/reusable-docker-build.yml",
+                lang: "yaml"
+            },
+            reusableDeploy: {
+                title: "Reusable K8s Deploy",
+                description: "A standardized deployment template using Helm. It encapsulates the complex logic of updating Kubernetes clusters safely.",
+                files: [".github/workflows/reusable-deploy-k8s.yml"],
+                code: "on:\n  workflow_call:\n    inputs:\n      environment:\n        description: Target environment",
+                lang: "yaml"
+            },
+            oidcAuth: {
+                title: "Terraform OIDC",
+                description: "Security architecture for keyless authentication. Allows GitHub Actions to assume IAM roles in AWS without storing long-lived secrets.",
+                files: ["terraform/oidc-role/main.tf"],
+                code: "resource \"aws_iam_openid_connect_provider\" \"github\" {\n  url = \"https://token.actions.githubusercontent.com\"\n  client_id_list = [\"sts.amazonaws.com\"]\n}",
+                lang: "hcl"
+            },
+            fastapiApp: {
+                title: "FastAPI App",
+                description: "A cloud-native Python application. It includes health checks and consumes environment metadata injected by the CI/CD pipeline.",
+                files: ["src/app/main.py"],
+                code: "@app.get(\"/health\")\ndef health_check():\n    return {\"status\": \"healthy\", \"version\": APP_VERSION}",
+                lang: "python"
+            }
+        };
+
+        window.nodeClickHandler = function(nodeId) {
+            const data = nodeData[nodeId];
+            if (!data) return;
+
+            const content = document.getElementById('detail-content');
+            content.innerHTML = `
+                <div class="node-title">${data.title}</div>
+                <div class="node-desc">${data.description}</div>
+                <div class="node-files">File: ${data.files.join(', ')}</div>
+                <div class="node-code"><pre><code>${data.code}</code></pre></div>
+            `;
+        };
+    </script>
+</body>
+</html>

@@ -10,6 +10,26 @@
 
 ---
 
+## 🚦 Visual Pipeline Status
+
+| Workflow | Status | Details |
+| :--- | :--- | :--- |
+| **Lint & Type Check** | `✅ Passed` | Flake8, Mypy, Black |
+| **Unit Testing** | `✅ Passed` | Pytest (100% Coverage) |
+| **Security Scan** | `✅ Passed` | Trivy Container Scan |
+| **3D Matrix** | `✅ 8/8 Jobs` | OS x Python x Postgres |
+| **Multi-Arch Build** | `✅ Done` | amd64, arm64 (Graviton) |
+| **K8s Deployment** | `🚀 Live` | Staging & Production |
+
+---
+
+## 🗺️ Interactive Walkthrough
+
+Explore the codebase and CI/CD architecture visually:
+👉 **[Open Interactive Walkthrough](./walkthrough-cicd-architecture.html)** *(Download and open in browser)*
+
+---
+
 ## 🏗️ Architecture
 
 ```
