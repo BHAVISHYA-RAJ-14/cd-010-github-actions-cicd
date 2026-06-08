@@ -64,7 +64,7 @@ jobs:
           echo "📌 Image tag: ${SHORT}"
 
       - name: Configure AWS credentials (OIDC — keyless)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume:    ${{ secrets.AWS_ROLE_ARN_DEV }}
           role-session-name: cd010-build-${{ github.run_id }}

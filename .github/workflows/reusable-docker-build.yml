@@ -68,7 +68,7 @@ jobs:
       # ── OIDC AWS Auth (only when pushing) ─────────────────────────────────
       - name: Configure AWS credentials (OIDC)
         if: inputs.push == true
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume:    ${{ secrets.AWS_ROLE_ARN }}
           role-session-name: cd010-docker-build-${{ inputs.environment }}
